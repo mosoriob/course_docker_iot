@@ -1,677 +1,483 @@
-# Docker 101 - Linux (Part 2): Understanding the Docker File System and Volumes
+## 2.0 Webapps with Docker
+Great! So you have now looked at `docker run`, played with a Docker container and also got the hang of some terminology. Armed with all this knowledge, you are now ready to get to the real stuff &#8212; deploying web applications with Docker.
 
-We had an introduction to volumes by way of bind mounts earlier, but let's take a deeper look at the Docker file system and volumes. 
+### 2.1 Run a static website in a container
+>**Note:** Code for this section is in this repo in the [static-site directory](https://github.com/docker/labs/tree/master/beginner/static-site).
 
-The [Docker documentation](https://docs.docker.com/engine/userguide/storagedriver/imagesandcontainers/_) gives a great explanation on how storage works with Docker images and containers, but here's the high points. 
+Let's start by taking baby-steps. First, we'll use Docker to run a static website in a container. The website is based on an existing image. We'll pull a Docker image from Docker Store, run the container, and see how easy it is to set up a web server.
 
-* Images are comprised of layers
-* These layers are added by each line in a Dockerfile
-* Images on the same host or registry will share layers if possible
-* When container is started it gets a unique writeable layer of its own to capture changes that occur while it's running
-* Layers exist on the host file system in some form (usually a directory, but not always) and are managed by a [storage driver](https://docs.docker.com/engine/userguide/storagedriver/selectadriver/) to present a logical filesystem in the running container. 
-* When a container is removed the unique writeable layer (and everything in it) is removed as well
-* To persist data (and improve performance) Volumes are used. 
-* Volumes (and the directories they are built on) are not managed by the storage driver, and will live on if a container is removed.  
-
-The following exercises will help to illustrate those concepts in practice. 
-
-Let's start by looking at layers and how files written to a container are managed by something called *copy on write*.
-
-## Layers and Copy on Write
-
-> Note: If you have just completed part 1 of the workshop, please close that session and start a new one. 
-
-1. In PWD click "+Add new instance" and move into that command windows.
-
-1. Pull down the Debian:Jessie image
-
-    ```
-    $ docker image pull debian:jessie
-    jessie: Pulling from library/debian
-    85b1f47fba49: Pull complete
-    Digest: sha256:f51cf81db2de8b5e9585300f655549812cdb27c56f8bfb992b8b706378cd517d
-    Status: Downloaded newer image for debian:jessie
-    ```
-
-2. Pull down a MySQL image
-
-    ```
-    $ docker image pull mysql
-    Using default tag: latest
-    latest: Pulling from library/mysql
-    85b1f47fba49: Already exists
-    27dc53f13a11: Pull complete
-    095c8ae4182d: Pull complete
-    0972f6b9a7de: Pull complete
-    1b199048e1da: Pull complete
-    159de3cf101e: Pull complete
-    963d934c2fcd: Pull complete
-    f4b66a97a0d0: Pull complete
-    f34057997f40: Pull complete
-    ca1db9a06aa4: Pull complete
-    0f913cb2cc0c: Pull complete
-    Digest: sha256:bfb22e93ee87c6aab6c1c9a4e7cdc68e9cb9b64920f28fa289f9ffae9fe8e173
-    Status: Downloaded newer image for mysql:latest
-    ```
-
-    What do you notice about those the output from the Docker pull request for MySQL?
-
-    The first layer pulled says:
-
-    `85b1f47fba49: Already exists`
-
-    Notice that the layer id (`85b1f47fba498`) is the same for the first layer of the MySQl image and the only layer in the Debian:Jessie image. And because we already had pulled that layer when we pulled the Debian image, we didn't have to pull it again. 
-
-    So, what does that tell us about the MySQL image? Since each layer is created by a line in the image's *Dockerfile*, we know that the MySQL image is based on the Debian:Jessie base image. We can confirm this by looking at the [Dockerfile on Docker Store](https://github.com/docker-library/mysql/blob/0590e4efd2b31ec794383f084d419dea9bc752c4/5.7/Dockerfile). 
-
-    The first line in the the Dockerfile is: `FROM debian:jessie` This will import that layer into the MySQL image. 
-
-    So layers are created by Dockerfiles and are are shared between images. When you start a container, a writeable layer is added to the base image. 
-
-    Next you will create a file in our container, and see how that's represented on the host file system. 
-
-3. Start a Debian container, shell into it.   
-
-    ```
-    $ docker run --tty --interactive --name debian debian:jessie bash
-    root@e09203d84deb:/#
-    ```
-
-4. Create a file and then list out the directory to make sure it's there:
-
-    ```
-    root@e09203d84deb:/# touch test-file
-    root@e09203d84deb:/# ls
-    bin   dev  home  lib64  mnt  proc  run   srv  test-file  usrboot  etc  lib   media  opt  root  sbin  sys  tmp        var
-    ```
-
-    We can see  `test-file` exists in the root of the containers file system. 
-
-    What has happened is that when a new file was written to the disk, the Docker storage driver placed that file in it's own layer. This is called *copy on write* - as soon as a change is detected the change is copied into the writeable layer. That layers is represented by a directory on the host file system. All of this is managed by the Docker storage driver. 
-
-5. Exit the container but leave it running by pressing `ctrl-p` and then `ctrl-q`
-
-    The Docker hosts for the labs today use OverlayFS with the [overlay2](https://docs.docker.com/engine/userguide/storagedriver/overlayfs-driver/#how-the-overlay2-driver-works) storage driver. 
-
-    OverlayFS layers two directories on a single Linux host and presents them as a single directory. These directories are called layers and the unification process is referred to as a union mount. OverlayFS refers to the lower directory as lowerdir and the upper directory a upperdir. "Upper" and "Lower" refer to when the layer was added to the image. In our example the writeable layer is the most "upper" layer.  The unified view is exposed through its own directory called merged. 
-
-    We can use Docker's *inspect* command to look at where these directories live on our Docker host's file system. 
-
-    > Note: The *inspect* command uses Go templates to allow us to extract out specific information from its output. For more information on how these templates work with *inspect* read this [excellent tutorial](http://container-solutions.com/docker-inspect-template-magic/). 
-
-    ```
-    $ docker inspect -f '{{json .GraphDriver.Data}}' debian | jq
-    {
-      "LowerDir": "/var/lib/docker/overlay2/0dad4d523351851af4872f8c6706fbdf36a6fa60dc7a29fff6eb388bf3d7194e-init/diff:/var/lib/docker/overlay2/c2e2db4221ad5dca9f35a92e04d17c79b861ddee30015fa3ddc77c66ae1bf758/diff",
-      "MergedDir": "/var/lib/docker/overlay2/0dad4d523351851af4872f8c6706fbdf36a6fa60dc7a29fff6eb388bf3d7194e/merged",
-      "UpperDir": "/var/lib/docker/overlay2/0dad4d523351851af4872f8c6706fbdf36a6fa60dc7a29fff6eb388bf3d7194e/diff",
-      "WorkDir": "/var/lib/docker/overlay2/0dad4d523351851af4872f8c6706fbdf36a6fa60dc7a29fff6eb388bf3d7194e/work"
-    }
-    ```
-    > Note: `WorkDir` is a working directory for the Overlay2 driver
-
-    Since the change we made is the newest modification to the Debian container's file system, it's going to be stored in `UpperDir`. 
-
-6. List the contents of the `UpperDir`. 
-
-    ```
-    $ cd $(docker inspect -f {{.GraphDriver.Data.UpperDir}} debian)
-    
-    $ ls
-    root       test-file
-    ```
-
-    `MergedDir` is going to give us a look at the root filesystem of our container which is a combination of `UpperDir` and `LowerDir`:
-
-7. List the contents of `MergedDir`:
-
-    ```
-    $ cd $(docker inspect -f {{.GraphDriver.Data.MergedDir}} debian)
-
-    $ ls
-    bin        etc        lib64      opt        run        sys        usr
-    boot       home       media      proc       sbin       test-file  var
-    dev        lib        mnt        root       srv        tmp
-    ```
-
-    Notice that the directory on our host file system has the same contents as the one inside the container. That's because that directory is what we see in the container. 
-
-    > Warning: You should NEVER manipulate your container's file system via the Docker host. This is only being done as an academic exercise. 
-
-8. Write a new file to the host file system in the `UpperDir`, and list the directory to see the contents
-
-    ```
-    $ cd $(docker inspect -f {{.GraphDriver.Data.UpperDir}} debian)
-
-    $ touch test-file2
-
-    $ ls
-    root        test-file   test-file2
-    ```
-
-
-9. Move back into your Debian container and list the root file system
-
-    ```
-    $ docker attach debian
-
-    root@674d7abf10c6:/# ls
-    bin   dev  home  lib64  mnt  proc  run   srv  test-file   tmp  var
-    boot  etc  lib   media  opt  root  sbin  sys  test-file2  usr
-    ```
-    
-    The file that was created on the local host filesystem (`test-file2`) is now available in the container as well. 
-
-10. Type `exit` to stop your container, which will also stop it
-
-    ```
-    root@674d7abf10c6:/# exit
-    exit
-    ```
-
-11. Ensure that your debian container still exists
-
-    ```
-    $ docker container ls --all
-    CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS           PORTS               NAMES
-    674d7abf10c6        debian:jessie       "bash"              36 minutes ago      Exited (0) 2 minutes ago                       debian
-    ```
-
-12. List out the current directory
-
-    ```
-    $ ls
-    root        test-file   test-file2
-    ```
-
-    Because the container still exists, the files are still available on  your file system. At this point you could `docker start` your container and it would be just as it was before you exited. 
-
-    However, if we remove the container, the directories on the host file system will be removed, and your changes will be gone
-
-13. Remove the container and list the directory contents
-
-    ```
-    $ docker container rm debian
-    debian
-
-    $ ls
-    ```
-
-    The files that were created are now gone. You've actually been left in a sort of "no man's land" as the directory you're in has actually been deleted as well.
-
-14. Copy the directory location from the prompt in the terminal. 
-
-15. CD back to your home directory
-
-    ```
-    $ cd
-    ```
-
-16. Attempt to list the contents of the old `UpperDir` directory.
-
-    ```
-    $ ls /var/lib/docker/overlay2/0dad4d523351851af4872f8c6706fbdf36a6fa60dc7a29fff6eb388bf3d7194e/diff
-    ls: /var/lib/docker/overlay2/0dad4d523351851af4872f8c6706fbdf36a6fa60dc7a29fff6eb388bf3d7194e/diff: No such file or directory
-    ```
-
-## Understanding Docker Volumes
-
-[Docker volumes](https://docs.docker.com/engine/admin/volumes/volumes/) are directories on the host file system that are not managed by the storage driver. Since they are not managed by the storage drive they offer a couple of important benefits. 
-
-* **Performance**: Because the storage driver has to create the logical filesystem in the container from potentially many directories on the local host, accessing data can be slow. Especially if there is a lot of write activity to that container. In fact you should try and minimize the amount of writes that happen to the container's filesystem, and instead direct those writes to a volume
-
-* **Persistence**: Volumes are not removed when the container is deleted. They exist until explicitly removed. This means data written to a volume can be reused by other containers. 
-
-Volumes can be anonymous or named. Anonymous volumes have no way for the to be explicitly referenced. They are almost exclusively used for performance reasons as you cannot persist data effectively with anonymous volumes. Named volumes can be explicitly referenced so they can be used to persist data and increase performance. 
-
-The next sections will cover both anonymous and named volumes. 
-
-> Special Note: These next sections were adapted from [Arun Gupta's](https://twitter.com/arungupta) excellent [tutorial](http://blog.arungupta.me/docker-mysql-persistence/) on persisting data with MySQL. 
-
-### Anonymous Volumes
-
-If you once again look at the MySQL [Dockerfile](https://github.com/docker-library/mysql/blob/0590e4efd2b31ec794383f084d419dea9bc752c4/5.7/Dockerfile) you will find the following line:
+The image that you are going to use is a single-page website that was already created for this demo and is available on the Docker Store as [`dockersamples/static-site`](https://store.docker.com/community/images/dockersamples/static-site). You can download and run the image directly in one go using `docker run` as follows.
 
 ```
-VOLUME /var/lib/mysql
+$ docker run -d dockersamples/static-site
 ```
 
-This line sets up an anonymous volume in order to increase database performance by avoiding sending a bunch of writes through the Docker storage driver.
+>**Note:** The current version of this image doesn't run without the `-d` flag. The `-d` flag enables **detached mode**, which detaches the running container from the terminal/shell and returns your prompt after the container starts. We are debugging the problem with this image but for now, use `-d` even for this first example.
 
-Note: An anonymous volume is a volume that hasn't been explicitly named. This means that it's extremely difficult to use the volume later with a new container. Named volumes solve that problem, and will be covered later in this section. 
+So, what happens when you run this command?
 
+Since the image doesn't exist on your Docker host, the Docker daemon first fetches it from the registry and then runs it as a container.
 
-1. Start a MySQL container
+Now that the server is running, do you see the website? What port is it running on? And more importantly, how do you access the container directly from our host machine?
 
-    ```
-    $ docker run --name mysqldb -e MYSQL_USER=mysql -e MYSQL_PASSWORD=mysql -e MYSQL_DATABASE=sample -e MYSQL_ROOT_PASSWORD=supersecret -d mysql
-    acf185dc16e274b2f332266a1bfc6d1df7d7b4f780e6a7ec6716b40cafa5b3c3
-    ```
+Actually, you probably won't be able to answer any of these questions yet! &#9786; In this case, the client didn't tell the Docker Engine to publish any of the ports, so you need to re-run the `docker run` command to add this instruction.
 
-    When we start the container the anonymous volume is created:
+Let's re-run the command with some new flags to publish ports and pass your name to the container to customize the message displayed. We'll use the *-d* option again to run the container in detached mode.
 
-2. Use Docker inspect to view the details of the anonymous volume
+First, stop the container that you have just launched. In order to do this, we need the container ID.
 
+Since we ran the container in detached mode, we don't have to launch another terminal to do this. Run `docker ps` to view the running containers.
 
-    ```
-    $ docker inspect -f 'in the {{.Name}} container {{(index .Mounts 0).Destination}} is mapped to {{(index .Mounts 0).Source}}' mysqldb
-    in the /mysqldb container /var/lib/mysql is mapped to /var/lib/docker/volumes/cd79b3301df29d13a068d624467d6080354b81e34d794b615e6e93dd61f89628/_data
-    ```
+```
+$ docker ps
+CONTAINER ID        IMAGE                  COMMAND                  CREATED             STATUS              PORTS               NAMES
+a7a0e504ca3e        dockersamples/static-site   "/bin/sh -c 'cd /usr/"   28 seconds ago      Up 26 seconds       80/tcp, 443/tcp     stupefied_mahavira
+```
 
-3. Change into the volume directory on the local host file system and list the contents
+Check out the `CONTAINER ID` column. You will need to use this `CONTAINER ID` value, a long sequence of characters, to identify the container you want to stop, and then to remove it. The example below provides the `CONTAINER ID` on our system; you should use the value that you see in your terminal.
+```
+$ docker stop a7a0e504ca3e
+$ docker rm   a7a0e504ca3e
+```
 
-    ```
-    $ cd $(docker inspect -f '{{(index .Mounts 0).Source}}' mysqldb)
+>**Note:** A cool feature is that you do not need to specify the entire `CONTAINER ID`. You can just specify a few starting characters and if it is unique among all the containers that you have launched, the Docker client will intelligently pick it up.
 
-    $ ls
-    auto.cnf            ib_buffer_pool      mysql               server-cert.pem
-    ca-key.pem          ib_logfile0         performance_schema  server-key.pem
-    ca.pem              ib_logfile1         private_key.pem     sys
-    client-cert.pem     ibdata1             public_key.pem
-    client-key.pem      ibtmp1              sample
-    ```
+Now, let's launch a container in **detached** mode as shown below:
 
-    Notice the the directory name starts with `/var/lib/docker/volumes/` whereas for directories managed by the Overlay2 storage driver it was `/var/lib/docker/overlay2`
+```
+$ docker run --name static-site -e AUTHOR="Your Name" -d -P dockersamples/static-site
+e61d12292d69556eabe2a44c16cbd54486b2527e2ce4f95438e504afb7b02810
+```
 
-    As mentined anonymous volumes will not persist data between containers, they are almost always used to increase performance. 
+In the above command:
 
-4. Shell into your running MySQL container and log into MySQL
+*  `-d` will create a container with the process detached from our terminal
+* `-P` will publish all the exposed container ports to random ports on the Docker host
+* `-e` is how you pass environment variables to the container
+* `--name` allows you to specify a container name
+* `AUTHOR` is the environment variable name and `Your Name` is the value that you can pass
 
-    ```
-    $ docker exec --tty --interactive mysqldb bash
+Now you can see the ports by running the `docker port` command.
 
-    root@132f4b3ec0dc:/# mysql --user=mysql --password=mysql
-    mysql: [Warning] Using a password on the command line interface can be insecure.
-    Welcome to the MySQL monitor.  Commands end with ; or \g.
-    Your MySQL connection id is 3
-    Server version: 5.7.19 MySQL Community Server (GPL)
+```
+$ docker port static-site
+443/tcp -> 0.0.0.0:32772
+80/tcp -> 0.0.0.0:32773
+```
 
-    Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+If you are running [Docker for Mac](https://docs.docker.com/docker-for-mac/), [Docker for Windows](https://docs.docker.com/docker-for-windows/), or Docker on Linux, you can open `http://localhost:[YOUR_PORT_FOR 80/tcp]`. For our example this is `http://localhost:32773`.
 
-    Oracle is a registered trademark of Oracle Corporation and/or its
-    affiliates. Other names may be trademarks of their respective
-    owners.
+If you are using Docker Machine on Mac or Windows, you can find the hostname on the command line using `docker-machine` as follows (assuming you are using the `default` machine).
 
-    Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
-    ```
+```
+$ docker-machine ip default
+192.168.99.100
+```
+You can now open `http://<YOUR_IPADDRESS>:[YOUR_PORT_FOR 80/tcp]` to see your site live! For our example, this is: `http://192.168.99.100:32773`.
 
-5. Create a new table
+You can also run a second webserver at the same time, specifying a custom host port mapping to the container's webserver.
 
-    ```
-    mysql> show databases;
-    +--------------------+
-    | Database           |
-    +--------------------+
-    | information_schema |
-    | sample             |
-    +--------------------+
-    2 rows in set (0.00 sec)
+```
+$ docker run --name static-site-2 -e AUTHOR="Your Name" -d -p 8888:80 dockersamples/static-site
+```
+<img src="../images/static.png" title="static">
 
-    mysql> connect sample;
-    Connection id:    4
-    Current database: sample
+To deploy this on a real server you would just need to install Docker, and run the above `docker` command(as in this case you can see the `AUTHOR` is Docker which we passed as an environment variable).
 
-    mysql> show tables;
-    Empty set (0.00 sec)
+Now that you've seen how to run a webserver inside a Docker container, how do you create your own Docker image? This is the question we'll explore in the next section.
 
-    mysql> create table user(name varchar(50));
-    Query OK, 0 rows affected (0.01 sec)
+But first, let's stop and remove the containers since you won't be using them anymore.
 
-    mysql> show tables;
-    +------------------+
-    | Tables_in_sample |
-    +------------------+
-    | user             |
-    +------------------+
-    1 row in set (0.00 sec)
-    ```
+```
+$ docker stop static-site
+$ docker rm static-site
+```
 
-6. Exit MySQL and the MySQL container. 
+Let's use a shortcut to remove the second site:
 
-    ```
-    mysql> exit
-    Bye
+```
+$ docker rm -f static-site-2
+```
 
-    root@132f4b3ec0dc:/# exit
-    exit
-    ```
+Run `docker ps` to make sure the containers are gone.
+```
+$ docker ps
+CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS              PORTS               NAMES
+```
 
-7. Stop the container and restart it
+### 2.2 Docker Images
 
-    ```
-    $ docker stop mysqldb
-    mysqldb
+In this section, let's dive deeper into what Docker images are. You will build your own image, use that image to run an application locally, and finally, push some of your own images to Docker Cloud.
 
-    $ docker start mysqldb
-    mysqldb
-    ```
+Docker images are the basis of containers. In the previous example, you **pulled** the *dockersamples/static-site* image from the registry and asked the Docker client to run a container **based** on that image. To see the list of images that are available locally on your system, run the `docker images` command.
 
-8. Shell back into the running container and log into MySQL
+```
+$ docker images
+REPOSITORY             TAG                 IMAGE ID            CREATED             SIZE
+dockersamples/static-site   latest              92a386b6e686        2 hours ago        190.5 MB
+nginx                  latest              af4b3d7d5401        3 hours ago        190.5 MB
+python                 2.7                 1c32174fd534        14 hours ago        676.8 MB
+postgres               9.4                 88d845ac7a88        14 hours ago        263.6 MB
+containous/traefik     latest              27b4e0c6b2fd        4 days ago          20.75 MB
+node                   0.10                42426a5cba5f        6 days ago          633.7 MB
+redis                  latest              4f5f397d4b7c        7 days ago          177.5 MB
+mongo                  latest              467eb21035a8        7 days ago          309.7 MB
+alpine                 3.3                 70c557e50ed6        8 days ago          4.794 MB
+java                   7                   21f6ce84e43c        8 days ago          587.7 MB
+```
 
-    ```
-    $ docker exec --interactive --tty mysqldb bash
+Above is a list of images that I've pulled from the registry and those I've created myself (we'll shortly see how). You will have a different list of images on your machine. The `TAG` refers to a particular snapshot of the image and the `ID` is the corresponding unique identifier for that image.
 
-    root@132f4b3ec0dc:/# mysql --user=mysql --password=mysql
-    mysql: [Warning] Using a password on the command line interface can be insecure.
-    Welcome to the MySQL monitor.  Commands end with ; or \g.
-    Your MySQL connection id is 3
-    Server version: 5.7.19 MySQL Community Server (GPL)
+For simplicity, you can think of an image akin to a git repository - images can be [committed](https://docs.docker.com/engine/reference/commandline/commit/) with changes and have multiple versions. When you do not provide a specific version number, the client defaults to `latest`.
 
-    Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+For example you could pull a specific version of `ubuntu` image as follows:
 
-    Oracle is a registered trademark of Oracle Corporation and/or its
-    affiliates. Other names may be trademarks of their respective
-    owners.
+```
+$ docker pull ubuntu:12.04
+```
 
-    Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
-    ```
+If you do not specify the version number of the image then, as mentioned, the Docker client will default to a version named `latest`.
 
-9. Ensure the table created previously table still exists
+So for example, the `docker pull` command given below will pull an image named `ubuntu:latest`:
 
-    ```
-    mysql> connect sample;
-    Reading table information for completion of table and column names
-    You can turn off this feature to get a quicker startup with -A
+```
+$ docker pull ubuntu
+```
+
+To get a new Docker image you can either get it from a registry (such as the Docker Store) or create your own. There are hundreds of thousands of images available on [Docker Store](https://store.docker.com). You can also search for images directly from the command line using `docker search`.
+
+An important distinction with regard to images is between _base images_ and _child images_.
+
+- **Base images** are images that have no parent images, usually images with an OS like ubuntu, alpine or debian.
+
+- **Child images** are images that build on base images and add additional functionality.
+
+Another key concept is the idea of _official images_ and _user images_. (Both of which can be base images or child images.)
+
+- **Official images** are Docker sanctioned images. Docker, Inc. sponsors a dedicated team that is responsible for reviewing and publishing all Official Repositories content. This team works in collaboration with upstream software maintainers, security experts, and the broader Docker community. These are not prefixed by an organization or user name. In the list of images above, the `python`, `node`, `alpine` and `nginx` images are official (base) images. To find out more about them, check out the [Official Images Documentation](https://docs.docker.com/docker-hub/official_repos/).
+
+- **User images** are images created and shared by users like you. They build on base images and add additional functionality. Typically these are formatted as `user/image-name`. The `user` value in the image name is your Docker Store user or organization name.
+
+### 2.3 Create your first image
+>**Note:** The code for this section is in this repository in the [flask-app](https://github.com/docker/labs/tree/master/beginner/flask-app) directory.
+
+Now that you have a better understanding of images, it's time to create your own. Our goal here is to create an image that sandboxes a small [Flask](http://flask.pocoo.org) application.
+
+**The goal of this exercise is to create a Docker image which will run a Flask app.**
+
+We'll do this by first pulling together the components for a random cat picture generator built with Python Flask, then _dockerizing_ it by writing a _Dockerfile_. Finally, we'll build the image, and then run it.
+
+- [Create a Python Flask app that displays random cat pix](#231-create-a-python-flask-app-that-displays-random-cat-pix)
+- [Write a Dockerfile](#232-write-a-dockerfile)
+- [Build the image](#233-build-the-image)
+- [Run your image](#234-run-your-image)
+- [Dockerfile commands summary](#235-dockerfile-commands-summary)
+
+### 2.3.1 Create a Python Flask app that displays random cat pix
+
+For the purposes of this workshop, we've created a fun little Python Flask app that displays a random cat `.gif` every time it is loaded - because, you know, who doesn't like cats?
+
+Start by creating a directory called ```flask-app``` where we'll create the following files:
+
+- [app.py](#apppy)
+- [requirements.txt](#requirementstxt)
+- [templates/index.html](#templatesindexhtml)
+- [Dockerfile](#dockerfile)
+
+Make sure to ```cd flask-app``` before you start creating the files, because you don't want to start adding a whole bunch of other random files to your image.
+
+#### app.py
+Create the **app.py** with the following content:
+
+```
+from flask import Flask, render_template
+import random
+
+app = Flask(__name__)
+
+# list of cat images
+images = [
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr05/15/9/anigif_enhanced-buzz-26388-1381844103-11.gif",
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr01/15/9/anigif_enhanced-buzz-31540-1381844535-8.gif",
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr05/15/9/anigif_enhanced-buzz-26390-1381844163-18.gif",
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr06/15/10/anigif_enhanced-buzz-1376-1381846217-0.gif",
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr03/15/9/anigif_enhanced-buzz-3391-1381844336-26.gif",
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr06/15/10/anigif_enhanced-buzz-29111-1381845968-0.gif",
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr03/15/9/anigif_enhanced-buzz-3409-1381844582-13.gif",
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr02/15/9/anigif_enhanced-buzz-19667-1381844937-10.gif",
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr05/15/9/anigif_enhanced-buzz-26358-1381845043-13.gif",
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr06/15/9/anigif_enhanced-buzz-18774-1381844645-6.gif",
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr06/15/9/anigif_enhanced-buzz-25158-1381844793-0.gif",
+    "http://ak-hdl.buzzfed.com/static/2013-10/enhanced/webdr03/15/10/anigif_enhanced-buzz-11980-1381846269-1.gif"
+]
 
-    Connection id:    4
-    Current database: sample
+@app.route('/')
+def index():
+    url = random.choice(images)
+    return render_template('index.html', url=url)
 
-    myslq> show tables;
-    +------------------+
-    | Tables_in_sample |
-    +------------------+
-    | user             |
-    +------------------+
-    1 row in set (0.00 sec)
-    ```
+if __name__ == "__main__":
+    app.run(host="0.0.0.0")
+```
+#### requirements.txt
+In order to install the Python modules required for our app, we need to create a file called **requirements.txt** and add the following line to that file:
 
-10. Exit MySQL and the MySQL container. 
+```
+Flask==0.10.1
+```
+#### templates/index.html
+Create a directory called `templates` and create an **index.html** file in that directory with the following content in it:
 
-    ```
-    mysql> exit
-    Bye
-
-    root@132f4b3ec0dc:/# exit
-    exit
-    ```
-
-    The table persisted across container restarts, which is to be expected. In fact, it would have done this whether or not we had actually used a volume as shown in the previous section. 
-
-11. Let's look at the volume again
-
-    ```
-    $ docker inspect -f 'in the {{.Name}} container {{(index .Mounts 0).Destination}} is mapped to {{(index .Mounts 0).Source}}' mysqldb
-    in the /mysqldb container /var/lib/mysql is mapped to /var/lib/docker/volumes/cd79b3301df29d13a068d624467d6080354b81e34d794b615e6e93dd61f89628/_data
-    ```
-
-    We do see the volume was not affected by the container restart either. 
-
-    Where people often get confused is in expecting that the anonymous volume can be used to persist data BETWEEN containers. 
-
-    To examine that delete the old container, create a new one with the same command, and check to see if the table exists. 
-
-12. Remove the current MySQL container
-
-    ```
-    $ docker container rm --force mysqldb
-    mysqldb
-    ```
-
-13. Start a new container with the same command that was used before
-
-    ```
-    $ docker run --name mysqldb -e MYSQL_USER=mysql -e MYSQL_PASSWORD=mysql -e MYSQL_DATABASE=sample -e MYSQL_ROOT_PASSWORD=supersecret -d mysql
-    eb15eb4ecd26d7814a8da3bb27cee1a23304fab1961358dd904db37c061d3798
-    ```
-
-14. List out the volume details for the new container
-
-    ```
-    $ docker inspect -f 'in the {{.Name}} container {{(index .Mounts 0).Destination}} is mapped to {{(index .Mounts 0).Source}}' mysqldb
-    in the /mysqldb container /var/lib/mysql is mapped to /var/lib/docker/volumes/e0ffdc6b4e0cfc6e795b83cece06b5b807e6af1b52c9d0b787e38a48e159404a/_data
-    ```
-
-    Notice this directory is different than before. 
-
-15. Shell back into the running container and log into MySQL
-
-    ```
-    $ docker exec --interactive --tty mysqldb bash
-
-    root@132f4b3ec0dc:/# mysql --user=mysql --password=mysql
-    mysql: [Warning] Using a password on the command line interface can be insecure.
-    Welcome to the MySQL monitor.  Commands end with ; or \g.
-    Your MySQL connection id is 3
-    Server version: 5.7.19 MySQL Community Server (GPL)
-
-    Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
-
-    Oracle is a registered trademark of Oracle Corporation and/or its
-    affiliates. Other names may be trademarks of their respective
-    owners.
-
-    Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
-    ```
-
-16. Check to see if table created previously table still exists
-
-    ```
-    mysql> connect sample;
-    Connection id:    4
-    Current database: sample
-
-    mysql> show tables;
-    Empty set (0.00 sec)
-    ```
-
-17. Exit MySQL and the MySQL container. 
-
-    ```
-    mysql> exit
-    Bye
-
-    root@132f4b3ec0dc:/# exit
-    exit
-    ```
-
-18. Remove the container
-
-    ```
-    docker container rm --force mysqldb
-    mysqldb
-    ```
-
-So while a volume was used to store the new table in the original container, because it wasn't a named volume the data could not be persisted between containers. 
-
-To achieve persistence a named volume should be used.
-
-### Named Volumes
-
-A named volume (as the name implies) is a volume that's been explicitly named and can easily be referenced. 
-
-A named volume can be create on the command line, in a docker-compose file, and when you start a new container. They [CANNOT be created as part of the image's dockerfile](https://github.com/moby/moby/issues/30647). 
-
-1. Start a MySQL container with a named volume (`dbdata`)
-
-    ```
-    $ docker run --name mysqldb \
-    -e MYSQL_USER=mysql \
-    -e MYSQL_PASSWORD=mysql \
-    -e MYSQL_DATABASE=sample \
-    -e MYSQL_ROOT_PASSWORD=supersecret \
-    --detach \
-    --mount type=volume,source=mydbdata,target=/var/lib/mysql \
-    mysql
-    ```
-
-    Because the newly created volume is empty, Docker will copy over whatever existed in the container at `/var/lib/mysql` when the container starts. 
-
-    Docker volumes are primatives just like images and containers. As such, they can be listed and removed in the same way. 
-
-2. List the volumes on the Docker host
-
-    ```
-    $ docker volume ls
-    DRIVER              VOLUME NAME
-    local               55c322b9c4a644a5284ccb5e4d7b6b466a0534e26d57c9ef4221637d39cf9a88
-    local               cc44059d23e0a914d4390ea860fd35b2acdaa480e83c025fb381da187b652a66
-    local               e0ffdc6b4e0cfc6e795b83cece06b5b807e6af1b52c9d0b787e38a48e159404a
-    local               mydbdata
-    ```
-
-3. Inspect the volume
-
-    ```
-    $ docker inspect mydbdata
-    [
-        {
-            "CreatedAt": "2017-10-13T19:55:10Z",
-            "Driver": "local",
-            "Labels": null,
-            "Mountpoint": "/var/lib/docker/volumes/mydbdata/_data",
-            "Name": "mydbdata",
-            "Options": {},
-            "Scope": "local"
-        }
-    ]
-    ```
-
-    Any data written to `/var/lib/mysql` in the container will be rerouted to `/var/lib/docker/volumes/mydbdata/_data` instead. 
-
-4. Shell into your running MySQL container and log into MySQL
-
-    ```
-    $ docker exec --tty --interactive mysqldb bash
-
-    root@132f4b3ec0dc:/# mysql --user=mysql --password=mysql
-    mysql: [Warning] Using a password on the command line interface can be insecure.
-    Welcome to the MySQL monitor.  Commands end with ; or \g.
-    Your MySQL connection id is 3
-    Server version: 5.7.19 MySQL Community Server (GPL)
-
-    Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
-
-    Oracle is a registered trademark of Oracle Corporation and/or its
-    affiliates. Other names may be trademarks of their respective
-    owners.
-
-    Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
-    ```
-
-5. Create a new table
-
-    ```
-    mysql> connect sample;
-    Connection id:    4
-    Current database: sample
-
-    mysql> show tables;
-    Empty set (0.00 sec)
-
-    mysql> create table user(name varchar(50));
-    Query OK, 0 rows affected (0.01 sec)
-
-    mysql> show tables;
-    +------------------+
-    | Tables_in_sample |
-    +------------------+
-    | user             |
-    +------------------+
-    1 row in set (0.00 sec)
-    ```
-
-6. Exit MySQL and the MySQL container. 
-
-    ```
-    mysql> exit
-    Bye
-
-    root@132f4b3ec0dc:/# exit
-    exit
-    ```
-
-7. Remove the MySQL container
-
-    ```
-    $ docker container rm --force mysqldb
-    ```
-
-    Because the MySQL was writing out to a named volume, we can start a new container with the same data. 
-
-    When the container starts it will not overwrite existing data in a volume. So the data created in the previous steps will be left intact and mounted into the new container. 
-
-8. Start a new MySQL container
-
-    ```
-    $ docker run --name new_mysqldb \
-    -e MYSQL_USER=mysql \
-    -e MYSQL_PASSWORD=mysql \
-    -e MYSQL_DATABASE=sample \
-    -e MYSQL_ROOT_PASSWORD=supersecret \
-    --detach \
-    --mount type=volume,source=mydbdata,target=/var/lib/mysql \
-    mysql
-    ```
-
-9. Shell into your running MySQL container and log into MySQL
-
-    ```
-    $ docker exec --tty --interactive new_mysqldb bash
-
-    root@132f4b3ec0dc:/# mysql --user=mysql --password=mysql
-    mysql: [Warning] Using a password on the command line interface can be insecure.
-    Welcome to the MySQL monitor.  Commands end with ; or \g.
-    Your MySQL connection id is 3
-    Server version: 5.7.19 MySQL Community Server (GPL)
-
-    Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
-
-    Oracle is a registered trademark of Oracle Corporation and/or its
-    affiliates. Other names may be trademarks of their respective
-    owners.
-
-    Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
-    ```
-
-10. Check to see if the previously created table exists in your new container.
-
-    ```
-    mysql> connect sample;
-    Reading table information for completion of table and column names
-    You can turn off this feature to get a quicker startup with -A
-
-    Connection id:    4
-    Current database: sample
-
-    mysql> show tables;
-    +------------------+
-    | Tables_in_sample |
-    +------------------+
-    | user             |
-    +------------------+
-    1 row in set (0.00 sec)
-    ```
-
-    The data will exist until the volume is explicitly deleted. 
-
-11. Exit MySQL and the MySQL container. 
-
-    ```
-    mysql> exit
-    Bye
-
-    root@132f4b3ec0dc:/# exit
-    exit
-    ```
-
-12. Remove the new MySQL container and volume
-
-    ```
-    $ docker container rm --force new_mysqldb
-    new_mysqldb
-
-    $ docker volume rm mydbdata
-    mydbdata
-    ```
-
-    If a new container was started with the previous command, it would create a new empty volume. 
+```
+<html>
+  <head>
+    <style type="text/css">
+      body {
+        background: black;
+        color: white;
+      }
+      div.container {
+        max-width: 500px;
+        margin: 100px auto;
+        border: 20px solid white;
+        padding: 10px;
+        text-align: center;
+      }
+      h4 {
+        text-transform: uppercase;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h4>Cat Gif of the day</h4>
+      <img src="{{url}}" />
+      <p><small>Courtesy: <a href="http://www.buzzfeed.com/copyranter/the-best-cat-gif-post-in-the-history-of-cat-gifs">Buzzfeed</a></small></p>
+    </div>
+  </body>
+</html>
+```
+### 2.3.2 Write a Dockerfile
+We want to create a Docker image with this web app. As mentioned above, all user images are based on a _base image_. Since our application is written in Python, we will build our own Python image based on [Alpine](https://store.docker.com/images/alpine). We'll do that using a **Dockerfile**.
+
+A [Dockerfile](https://docs.docker.com/engine/reference/builder/) is a text file that contains a list of commands that the Docker daemon calls while creating an image. The Dockerfile contains all the information that Docker needs to know to run the app &#8212; a base Docker image to run from, location of your project code, any dependencies it has, and what commands to run at start-up. It is a simple way to automate the image creation process. The best part is that the [commands](https://docs.docker.com/engine/reference/builder/) you write in a Dockerfile are *almost* identical to their equivalent Linux commands. This means you don't really have to learn new syntax to create your own Dockerfiles.
+
+
+1. Create a file called **Dockerfile**, and add content to it as described below.
+
+  We'll start by specifying our base image, using the `FROM` keyword:
+
+  ```
+  FROM alpine:3.5
+  ```
+
+2. The next step usually is to write the commands of copying the files and installing the dependencies. But first we will install the Python pip package to the alpine linux distribution. This will not just install the pip package but any other dependencies too, which includes the python interpreter. Add the following [RUN](https://docs.docker.com/engine/reference/builder/#run) command next:
+  ```
+  RUN apk add --update py2-pip
+  ```
+
+3. Let's add the files that make up the Flask Application.
+
+  Install all Python requirements for our app to run. This will be accomplished by adding the lines:
+
+  ```
+  COPY requirements.txt /usr/src/app/
+  RUN pip install --no-cache-dir -r /usr/src/app/requirements.txt
+  ```
+
+  Copy the files you have created earlier into our image by using [COPY](https://docs.docker.com/engine/reference/builder/#copy)  command.
+
+  ```
+  COPY app.py /usr/src/app/
+  COPY templates/index.html /usr/src/app/templates/
+  ```
+
+4. Specify the port number which needs to be exposed. Since our flask app is running on `5000` that's what we'll expose.
+  ```
+  EXPOSE 5000
+  ```
+
+5. The last step is the command for running the application which is simply - `python ./app.py`. Use the [CMD](https://docs.docker.com/engine/reference/builder/#cmd) command to do that:
+
+  ```
+  CMD ["python", "/usr/src/app/app.py"]
+  ```
+
+  The primary purpose of `CMD` is to tell the container which command it should run by default when it is started.
+
+6. Verify your Dockerfile.
+
+  Our `Dockerfile` is now ready. This is how it looks:
+
+  ```
+  # our base image
+  FROM alpine:3.5
+
+  # Install python and pip
+  RUN apk add --update py2-pip
+
+  # install Python modules needed by the Python app
+  COPY requirements.txt /usr/src/app/
+  RUN pip install --no-cache-dir -r /usr/src/app/requirements.txt
+
+  # copy files required for the app to run
+  COPY app.py /usr/src/app/
+  COPY templates/index.html /usr/src/app/templates/
+
+  # tell the port number the container should expose
+  EXPOSE 5000
+
+  # run the application
+  CMD ["python", "/usr/src/app/app.py"]
+  ```
+
+### 2.3.3 Build the image
+
+Now that you have your `Dockerfile`, you can build your image. The `docker build` command does the heavy-lifting of creating a docker image from a `Dockerfile`.
+
+When you run the `docker build` command given below, make sure to replace `<YOUR_USERNAME>` with your username. This username should be the same one you created when registering on [Docker Cloud](https://cloud.docker.com). If you haven't done that yet, please go ahead and create an account.
+
+The `docker build` command is quite simple - it takes an optional tag name with the `-t` flag, and the location of the directory containing the `Dockerfile` - the `.` indicates the current directory:
+
+```
+$ docker build -t <YOUR_USERNAME>/myfirstapp .
+Sending build context to Docker daemon 9.728 kB
+Step 1 : FROM alpine:latest
+ ---> 0d81fc72e790
+Step 2 : RUN apk add --update py-pip
+ ---> Running in 8abd4091b5f5
+fetch http://dl-4.alpinelinux.org/alpine/v3.3/main/x86_64/APKINDEX.tar.gz
+fetch http://dl-4.alpinelinux.org/alpine/v3.3/community/x86_64/APKINDEX.tar.gz
+(1/12) Installing libbz2 (1.0.6-r4)
+(2/12) Installing expat (2.1.0-r2)
+(3/12) Installing libffi (3.2.1-r2)
+(4/12) Installing gdbm (1.11-r1)
+(5/12) Installing ncurses-terminfo-base (6.0-r6)
+(6/12) Installing ncurses-terminfo (6.0-r6)
+(7/12) Installing ncurses-libs (6.0-r6)
+(8/12) Installing readline (6.3.008-r4)
+(9/12) Installing sqlite-libs (3.9.2-r0)
+(10/12) Installing python (2.7.11-r3)
+(11/12) Installing py-setuptools (18.8-r0)
+(12/12) Installing py-pip (7.1.2-r0)
+Executing busybox-1.24.1-r7.trigger
+OK: 59 MiB in 23 packages
+ ---> 976a232ac4ad
+Removing intermediate container 8abd4091b5f5
+Step 3 : COPY requirements.txt /usr/src/app/
+ ---> 65b4be05340c
+Removing intermediate container 29ef53b58e0f
+Step 4 : RUN pip install --no-cache-dir -r /usr/src/app/requirements.txt
+ ---> Running in a1f26ded28e7
+Collecting Flask==0.10.1 (from -r /usr/src/app/requirements.txt (line 1))
+  Downloading Flask-0.10.1.tar.gz (544kB)
+Collecting Werkzeug>=0.7 (from Flask==0.10.1->-r /usr/src/app/requirements.txt (line 1))
+  Downloading Werkzeug-0.11.4-py2.py3-none-any.whl (305kB)
+Collecting Jinja2>=2.4 (from Flask==0.10.1->-r /usr/src/app/requirements.txt (line 1))
+  Downloading Jinja2-2.8-py2.py3-none-any.whl (263kB)
+Collecting itsdangerous>=0.21 (from Flask==0.10.1->-r /usr/src/app/requirements.txt (line 1))
+  Downloading itsdangerous-0.24.tar.gz (46kB)
+Collecting MarkupSafe (from Jinja2>=2.4->Flask==0.10.1->-r /usr/src/app/requirements.txt (line 1))
+  Downloading MarkupSafe-0.23.tar.gz
+Installing collected packages: Werkzeug, MarkupSafe, Jinja2, itsdangerous, Flask
+  Running setup.py install for MarkupSafe
+  Running setup.py install for itsdangerous
+  Running setup.py install for Flask
+Successfully installed Flask-0.10.1 Jinja2-2.8 MarkupSafe-0.23 Werkzeug-0.11.4 itsdangerous-0.24
+You are using pip version 7.1.2, however version 8.1.1 is available.
+You should consider upgrading via the 'pip install --upgrade pip' command.
+ ---> 8de73b0730c2
+Removing intermediate container a1f26ded28e7
+Step 5 : COPY app.py /usr/src/app/
+ ---> 6a3436fca83e
+Removing intermediate container d51b81a8b698
+Step 6 : COPY templates/index.html /usr/src/app/templates/
+ ---> 8098386bee99
+Removing intermediate container b783d7646f83
+Step 7 : EXPOSE 5000
+ ---> Running in 31401b7dea40
+ ---> 5e9988d87da7
+Removing intermediate container 31401b7dea40
+Step 8 : CMD python /usr/src/app/app.py
+ ---> Running in 78e324d26576
+ ---> 2f7357a0805d
+Removing intermediate container 78e324d26576
+Successfully built 2f7357a0805d
+```
+
+If you don't have the `alpine:3.5` image, the client will first pull the image and then create your image. Therefore, your output on running the command will look different from mine. If everything went well, your image should be ready! Run `docker images` and see if your image (`<YOUR_USERNAME>/myfirstapp`) shows.
+
+### 2.3.4 Run your image
+The next step in this section is to run the image and see if it actually works.
+
+```
+$ docker run -p 8888:5000 --name myfirstapp YOUR_USERNAME/myfirstapp
+ * Running on http://0.0.0.0:5000/ (Press CTRL+C to quit)
+```
+
+Head over to `http://localhost:8888` and your app should be live. **Note** If you are using Docker Machine, you may need to open up another terminal and determine the container ip address using `docker-machine ip default`.
+
+<img src="../images/catgif.png" title="static">
+
+Hit the Refresh button in the web browser to see a few more cat images.
+
+### 2.3.4 Push your image
+Now that you've created and tested your image, you can push it to [Docker Cloud](https://cloud.docker.com).
+
+First you have to login to your Docker Cloud account, to do that:
+
+```
+docker login
+```
+
+Enter `YOUR_USERNAME` and `password` when prompted. 
+
+Now all you have to do is:
+
+```
+docker push YOUR_USERNAME/myfirstapp
+```
+Now that you are done with this container, stop and remove it since you won't be using it again.
+
+Open another terminal window and execute the following commands:
+
+```
+$ docker stop myfirstapp
+$ docker rm myfirstapp
+```
+
+or
+
+```
+$ docker rm -f myfirstapp
+```
+
+### 2.3.5 Dockerfile commands summary
+
+Here's a quick summary of the few basic commands we used in our Dockerfile.
+
+* `FROM` starts the Dockerfile. It is a requirement that the Dockerfile must start with the `FROM` command. Images are created in layers, which means you can use another image as the base image for your own. The `FROM` command defines your base layer. As arguments, it takes the name of the image. Optionally, you can add the Docker Cloud username of the maintainer and image version, in the format `username/imagename:version`.
+
+* `RUN` is used to build up the Image you're creating. For each `RUN` command, Docker will run the command then create a new layer of the image. This way you can roll back your image to previous states easily. The syntax for a `RUN` instruction is to place the full text of the shell command after the `RUN` (e.g., `RUN mkdir /user/local/foo`). This will automatically run in a `/bin/sh` shell. You can define a different shell like this: `RUN /bin/bash -c 'mkdir /user/local/foo'`
+
+* `COPY` copies local files into the container.
+
+* `CMD` defines the commands that will run on the Image at start-up. Unlike a `RUN`, this does not create a new layer for the Image, but simply runs the command. There can only be one `CMD` per a Dockerfile/Image. If you need to run multiple commands, the best way to do that is to have the `CMD` run a script. `CMD` requires that you tell it where to run the command, unlike `RUN`. So example `CMD` commands would be:
+```
+  CMD ["python", "./app.py"]
+
+  CMD ["/bin/bash", "echo", "Hello World"]
+```
+
+* `EXPOSE` creates a hint for users of an image which ports provide services. It is included in the information which
+ can be retrieved via `$ docker inspect <container-id>`.     
+
+>**Note:** The `EXPOSE` command does not actually make any ports accessible to the host! Instead, this requires 
+publishing ports by means of the `-p` flag when using `$ docker run`.  
+
+* `PUSH` pushes your image to Docker Cloud, or alternately to a [private registry](https://docs.docker.com/registry/)
+
+>**Note:** If you want to learn more about Dockerfiles, check out [Best practices for writing Dockerfiles](https://docs.docker.com/engine/userguide/eng-image/dockerfile_best-practices/).
+
+## Next Steps
+For the next step in the tutorial head over to [3.0 Deploying an app to a Swarm](./votingapp.md)
