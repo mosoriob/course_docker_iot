@@ -430,7 +430,7 @@ First you have to login to your Docker Cloud account, to do that:
 docker login
 ```
 
-Enter `YOUR_USERNAME` and `password` when prompted. 
+Enter `YOUR_USERNAME` and `password` when prompted.
 
 Now all you have to do is:
 
@@ -472,7 +472,7 @@ Here's a quick summary of the few basic commands we used in our Dockerfile.
 * `EXPOSE` creates a hint for users of an image which ports provide services. It is included in the information which
  can be retrieved via `$ docker inspect <container-id>`.     
 
->**Note:** The `EXPOSE` command does not actually make any ports accessible to the host! Instead, this requires 
+>**Note:** The `EXPOSE` command does not actually make any ports accessible to the host! Instead, this requires
 publishing ports by means of the `-p` flag when using `$ docker run`.  
 
 * `PUSH` pushes your image to Docker Cloud, or alternately to a [private registry](https://docs.docker.com/registry/)
